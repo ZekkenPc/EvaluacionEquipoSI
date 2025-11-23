@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Registro de Alumno - Votación Académica</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+    }
+
+    .container {
+      background: #fff;
+      margin-top: 40px;
+      padding: 20px 25px 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      width: 100%;
+      max-width: 480px;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    label {
+      display: block;
+      margin-top: 10px;
+      font-weight: bold;
+      font-size: 0.9rem;
+    }
+
+    input[type="text"],
+    input[type="email"],
+    input[type="password"],
+    textarea {
+      width: 100%;
+      padding: 8px 10px;
+      margin-top: 4px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-size: 0.95rem;
+      box-sizing: border-box;
+    }
+
+    button {
+      margin-top: 15px;
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 4px;
+      font-size: 1rem;
+      cursor: pointer;
+      background-color: #007bff;
+      color: white;
+      font-weight: bold;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .msg {
+      margin-top: 15px;
+      font-size: 0.9rem;
+    }
+
+    .msg.ok {
+      color: #0a7a20;
+    }
+
+    .msg.error {
+      color: #c0392b;
+    }
+
+    .small {
+      font-size: 0.8rem;
+      color: #555;
+    }
+
+    textarea {
+      min-height: 120px;
+      font-family: monospace;
+      resize: vertical;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Registro de Alumno</h1>
+
+    <form id="registroForm">
+      <label for="nombre">Nombre completo</label>
+      <input id="nombre" type="text" required />
+
+      <label for="email">Correo electrónico</label>
+      <input id="email" type="email" required />
+
+      <label for="password">Contraseña</label>
+      <input id="password" type="password" required />
+
+      <button type="submit" id="btnRegistrar">Registrar alumno</button>
+    </form>
+
+    <div class="msg" id="mensaje"></div>
+
+    <hr style="margin:20px 0;" />
+
+    <p class="small">
+      <strong>Llave privada del alumno (GUARDAR y NO compartir):</strong><br />
+      <br />
+      <span style="color:#c0392b;">Copia y guarda este texto en un archivo seguro.</span>
+    </p>
+    <textarea id="privateKeyBox" readonly placeholder="Aquí aparecerá la llave privada después del registro"></textarea>
+  </div>
+
+  <script>
+    const API_BASE = "http://localhost:4000/api"; 
+
+    const form = document.getElementById("registroForm");
+    const mensajeEl = document.getElementById("mensaje");
+    const btnRegistrar = document.getElementById("btnRegistrar");
+    const privateKeyBox = document.getElementById("privateKeyBox");
+
+    
+    function arrayBufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return window.btoa(binary);
+    }
+
+    function toPem(base64, type) {
+      const wrap = base64.match(/.{1,64}/g).join("\n");
+      return `-----BEGIN ${type}-----\n${wrap}\n-----END ${type}-----`;
+    }
+
+    async function generarParLlavesRSA() {
+      // RSASSA-PKCS1-v1_5 para firmas con SHA-256
+      const keyPair = await window.crypto.subtle.generateKey(
+        {
+          name: "RSASSA-PKCS1-v1_5",
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: "SHA-256"
+        },
+        true, 
+        ["sign", "verify"]
+      );
+
+      const publicKeyBuffer = await window.crypto.subtle.exportKey("spki", keyPair.publicKey);
+      const privateKeyBuffer = await window.crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+
+      const publicKeyBase64 = arrayBufferToBase64(publicKeyBuffer);
+      const privateKeyBase64 = arrayBufferToBase64(privateKeyBuffer);
+
+      const publicKeyPem = toPem(publicKeyBase64, "PUBLIC KEY");
+      const privateKeyPem = toPem(privateKeyBase64, "PRIVATE KEY");
+
+      return { publicKeyPem, privateKeyPem };
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      mensajeEl.textContent = "";
+      mensajeEl.className = "msg";
+      privateKeyBox.value = "";
+
+      const nombre = document.getElementById("nombre").value.trim();
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+
+      if (!nombre || !email || !password) {
+        mensajeEl.textContent = "Por favor completa todos los campos.";
+        mensajeEl.classList.add("error");
+        return;
+      }
+
+      btnRegistrar.disabled = true;
+      btnRegistrar.textContent = "Registrando...";
+
+      try {
+        // 1) Generar llave pública/privada en el navegador
+        const { publicKeyPem, privateKeyPem } = await generarParLlavesRSA();
+
+        // 2) Mostrar la llave privada para que el usuario la guarde
+        privateKeyBox.value = privateKeyPem;
+
+        // 3) Enviar registro al backend
+        const resp = await fetch(`${API_BASE}/auth/register`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            nombre,
+            email,
+            password,
+            publicKey: publicKeyPem
+          })
+        });
+
+        const data = await resp.json();
+
+        if (!resp.ok) {
+          throw new Error(data.msg || "Error al registrar");
+        }
+
+        mensajeEl.textContent = "Alumno registrado correctamente. Guarda la llave privada que aparece abajo.";
+        mensajeEl.classList.add("ok");
+
+       
+      } catch (err) {
+        console.error(err);
+        mensajeEl.textContent = "Error: " + err.message;
+        mensajeEl.classList.add("error");
+      } finally {
+        btnRegistrar.disabled = false;
+        btnRegistrar.textContent = "Registrar alumno";
+      }
+    });
+  </script>
+</body>
+</html>

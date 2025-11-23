@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Votar - Sistema de Votación Académica</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+    }
+
+    .container {
+      background: #fff;
+      margin-top: 30px;
+      padding: 20px 25px 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      width: 100%;
+      max-width: 600px;
+    }
+
+    h1, h2 {
+      text-align: center;
+      margin-bottom: 15px;
+      color: #333;
+    }
+
+    label {
+      display: block;
+      margin-top: 10px;
+      font-weight: bold;
+      font-size: 0.9rem;
+    }
+
+    input[type="text"],
+    input[type="email"],
+    input[type="password"],
+    textarea {
+      width: 100%;
+      padding: 8px 10px;
+      margin-top: 4px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-size: 0.95rem;
+      box-sizing: border-box;
+    }
+
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      font-family: monospace;
+    }
+
+    button {
+      margin-top: 15px;
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 4px;
+      font-size: 1rem;
+      cursor: pointer;
+      background-color: #007bff;
+      color: white;
+      font-weight: bold;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .section {
+      margin-bottom: 25px;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 15px;
+    }
+
+    .msg {
+      margin-top: 10px;
+      font-size: 0.9rem;
+    }
+
+    .msg.ok {
+      color: #0a7a20;
+    }
+
+    .msg.error {
+      color: #c0392b;
+    }
+
+    .small {
+      font-size: 0.8rem;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Votación Académica</h1>
+
+    <!-- SECCIÓN LOGIN -->
+    <div class="section">
+      <h2>1. Iniciar sesión</h2>
+      <form id="loginForm">
+        <label for="loginEmail">Correo electrónico</label>
+        <input id="loginEmail" type="email" required />
+
+        <label for="loginPassword">Contraseña</label>
+        <input id="loginPassword" type="password" required />
+
+        <button type="submit" id="btnLogin">Iniciar sesión</button>
+      </form>
+      <div class="msg" id="loginMsg"></div>
+    </div>
+
+    <!-- SECCIÓN VOTO -->
+    <div class="section">
+      <h2>2. Emitir voto</h2>
+
+      <p class="small">
+        Introduce tu <strong>llave privada</strong> (la que obtuviste al registrarte) <br/>
+        y escribe tu voto (por ejemplo: <code>CANDIDATO_A</code>).
+      </p>
+
+      <label for="privateKey">Llave privada del alumno (PEM)</label>
+      <textarea id="privateKey" placeholder="-----BEGIN PRIVATE KEY----- ..."></textarea>
+
+      <label for="voto">Voto (texto)</label>
+      <input id="voto" type="text" placeholder="CANDIDATO_A" />
+
+      <button id="btnVotar" disabled>Enviar voto</button>
+
+      <div class="msg" id="votoMsg"></div>
+    </div>
+
+    <p class="small">
+      Nota: El voto se envía cifrado con AES-256 y la llave se protege con RSA-OAEP (llave pública del servidor).
+      Además, tu voto se firma con tu llave privada (RSASSA-PKCS1-v1_5).
+    </p>
+  </div>
+
+  <script>
+    const API_BASE = "http://localhost:4000/api"; 
+
+    const loginForm = document.getElementById("loginForm");
+    const loginMsg = document.getElementById("loginMsg");
+    const btnLogin = document.getElementById("btnLogin");
+
+    const privateKeyTextarea = document.getElementById("privateKey");
+    const votoInput = document.getElementById("voto");
+    const btnVotar = document.getElementById("btnVotar");
+    const votoMsg = document.getElementById("votoMsg");
+
+    let jwtToken = null;
+    let serverPublicKeyPem = null;
+
+    // ==== Helpers de conversión ====
+
+    function pemToArrayBuffer(pem) {
+      const b64Lines = pem
+        .replace("-----BEGIN PUBLIC KEY-----", "")
+        .replace("-----END PUBLIC KEY-----", "")
+        .replace("-----BEGIN PRIVATE KEY-----", "")
+        .replace("-----END PRIVATE KEY-----", "")
+        .replace(/\r?\n|\r/g, "");
+      const b64 = b64Lines.trim();
+      const binary = atob(b64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
+    }
+
+    function arrayBufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }
+
+    // ==== LOGIN ====
+
+    loginForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      loginMsg.textContent = "";
+      loginMsg.className = "msg";
+
+      const email = document.getElementById("loginEmail").value.trim();
+      const password = document.getElementById("loginPassword").value;
+
+      if (!email || !password) {
+        loginMsg.textContent = "Completa email y contraseña.";
+        loginMsg.classList.add("error");
+        return;
+      }
+
+      btnLogin.disabled = true;
+      btnLogin.textContent = "Iniciando sesión...";
+
+      try {
+        const resp = await fetch(`${API_BASE}/auth/login`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ email, password })
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.msg || "Error en login");
+        }
+
+        jwtToken = data.token;
+        loginMsg.textContent = "Login correcto. Ya puedes emitir tu voto.";
+        loginMsg.classList.add("ok");
+        btnVotar.disabled = false;
+      } catch (err) {
+        console.error(err);
+        loginMsg.textContent = "Error: " + err.message;
+        loginMsg.classList.add("error");
+      } finally {
+        btnLogin.disabled = false;
+        btnLogin.textContent = "Iniciar sesión";
+      }
+    });
+
+    // ==== Obtener llave pública del servidor ====
+    async function cargarLlavePublicaServidor() {
+      try {
+        const resp = await fetch(`${API_BASE}/votes/server-public-key`);
+        const data = await resp.json();
+        serverPublicKeyPem = data.publicKey;
+      } catch (err) {
+        console.error("Error obteniendo llave pública del servidor:", err);
+      }
+    }
+    cargarLlavePublicaServidor();
+
+    // ==== Enviar voto (cifrado + firmado) ====
+
+    btnVotar.addEventListener("click", async () => {
+      votoMsg.textContent = "";
+      votoMsg.className = "msg";
+
+      if (!jwtToken) {
+        votoMsg.textContent = "Primero debes iniciar sesión.";
+        votoMsg.classList.add("error");
+        return;
+      }
+
+      const privateKeyPem = privateKeyTextarea.value.trim();
+      const votoClaro = votoInput.value.trim();
+
+      if (!privateKeyPem || !votoClaro) {
+        votoMsg.textContent = "Debes pegar tu llave privada y escribir tu voto.";
+        votoMsg.classList.add("error");
+        return;
+      }
+
+      if (!serverPublicKeyPem) {
+        votoMsg.textContent = "No se pudo obtener la llave pública del servidor.";
+        votoMsg.classList.add("error");
+        return;
+      }
+
+      btnVotar.disabled = true;
+      btnVotar.textContent = "Enviando voto...";
+
+      try {
+        // 1) Importar llave privada del alumno (para firmar)
+        const privateKeyBuffer = pemToArrayBuffer(privateKeyPem);
+        const studentPrivateKey = await window.crypto.subtle.importKey(
+          "pkcs8",
+          privateKeyBuffer,
+          {
+            name: "RSASSA-PKCS1-v1_5",
+            hash: "SHA-256"
+          },
+          false,
+          ["sign"]
+        );
+
+        // 2) Importar llave pública del servidor (para RSA-OAEP)
+        const serverPublicKeyBuffer = pemToArrayBuffer(serverPublicKeyPem);
+        const serverPublicKey = await window.crypto.subtle.importKey(
+          "spki",
+          serverPublicKeyBuffer,
+          {
+            name: "RSA-OAEP",
+            hash: "SHA-1" 
+          },
+          false,
+          ["encrypt"]
+        );
+
+        // 3) Generar KS (AES-256) e IV
+        const ksBytes = new Uint8Array(32);
+        window.crypto.getRandomValues(ksBytes);
+        const ivBytes = new Uint8Array(16);
+        window.crypto.getRandomValues(ivBytes);
+
+        const aesKey = await window.crypto.subtle.importKey(
+          "raw",
+          ksBytes,
+          {
+            name: "AES-CBC"
+          },
+          false,
+          ["encrypt"]
+        );
+
+        // 4) Cifrar el voto con AES-CBC
+        const encoder = new TextEncoder();
+        const votoBuffer = encoder.encode(votoClaro);
+        const encryptedVoteBuffer = await window.crypto.subtle.encrypt(
+          {
+            name: "AES-CBC",
+            iv: ivBytes
+          },
+          aesKey,
+          votoBuffer
+        );
+
+        const votoCifradoBase64 = arrayBufferToBase64(encryptedVoteBuffer);
+        const ivBase64 = arrayBufferToBase64(ivBytes.buffer);
+
+        // 5) Cifrar KS con la llave pública del servidor (RSA-OAEP)
+        const encryptedKsBuffer = await window.crypto.subtle.encrypt(
+          {
+            name: "RSA-OAEP"
+          },
+          serverPublicKey,
+          ksBytes
+        );
+        const ksCifradaBase64 = arrayBufferToBase64(encryptedKsBuffer);
+
+        // 6) Firmar el voto claro con la llave privada del alumno
+        const signatureBuffer = await window.crypto.subtle.sign(
+          {
+            name: "RSASSA-PKCS1-v1_5"
+          },
+          studentPrivateKey,
+          votoBuffer
+        );
+        const firmaBase64 = arrayBufferToBase64(signatureBuffer);
+
+        // 7) Enviar al backend
+        const resp = await fetch(`${API_BASE}/votes`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${jwtToken}`
+          },
+          body: JSON.stringify({
+            voto_cifrado: votoCifradoBase64,
+            iv: ivBase64,
+            ks_cifrada: ksCifradaBase64,
+            firma: firmaBase64
+          })
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.msg || "Error al registrar voto");
+        }
+
+        votoMsg.textContent = data.msg || "Voto registrado correctamente.";
+        votoMsg.classList.add("ok");
+      } catch (err) {
+        console.error(err);
+        votoMsg.textContent = "Error: " + err.message;
+        votoMsg.classList.add("error");
+      } finally {
+        btnVotar.disabled = false;
+        btnVotar.textContent = "Enviar voto";
+      }
+    });
+  </script>
+</body>
+</html>
